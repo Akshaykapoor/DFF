@@ -119,6 +119,7 @@ main(int argc, char *argv[])
 	socklen_t extlen;
 	void *databuf;
 	int offset;
+	uint8_t value1;
 	uint16_t value2;
 	int cmsglen;
 
@@ -155,7 +156,7 @@ main(int argc, char *argv[])
         }
         printf("Hop by Hop length: %d\n", currentlen);
 
-        currentlen = inet6_opt_append(NULL, 0, currentlen, IPV6_TLV_ROUTERALERT, 2, 2, NULL);
+        currentlen = inet6_opt_append(NULL, 0, currentlen, IPV6_TLV_DFF, 3, 2, NULL);
         if (currentlen == -1) {
                 perror("append() error");
                 exit(EXIT_FAILURE);
@@ -192,13 +193,16 @@ main(int argc, char *argv[])
                 exit(EXIT_FAILURE);
         }
 
-	currentlen = inet6_opt_append(extbuf, extlen, currentlen, IPV6_TLV_ROUTERALERT, 2, 2, &databuf);
+	currentlen = inet6_opt_append(extbuf, extlen, currentlen, IPV6_TLV_DFF, 3, 2, &databuf);
         if (currentlen == -1) {
                 perror("append() error");
                 exit(EXIT_FAILURE);
         }
 	
 	offset = 0;
+	value1 = 0x01;
+	offset = inet6_opt_set_val(databuf, offset, &value1, sizeof(value1));
+
 	value2 = 0x1211;
         offset = inet6_opt_set_val(databuf, offset, &value2, sizeof(value2));
 
@@ -250,7 +254,7 @@ main(int argc, char *argv[])
 #endif
 while(1)
 {
-	if (sendmsg(sock_fd, &msg, 0) < 0)
+	if (sendmsg(sock_fd, &msg, MSG_CONFIRM) < 0)
 	{
 		perror("sendmsg()");
 		exit(EXIT_FAILURE);
