@@ -64,7 +64,7 @@ main(int argc, char *argv[])
 
 
    int setsock_offset = 1;
-#if 0
+#if 1 
    if (setsockopt(sfd, IPPROTO_IPV6, IPV6_RECVHOPOPTS, &setsock_offset, sizeof(setsock_offset)) < 0)
         {
                 perror("setsockopt");
@@ -87,7 +87,7 @@ main(int argc, char *argv[])
 	void *extptr;
 	socklen_t cmsgspace;
 	#define IPV6_TLV_ROUTERALERT 5
-
+	#define IPV6_TLV_DFF 0xEE
 
 	memset(&buffer, 0, sizeof(buffer));
 	memset(&recv_addr, 0, sizeof(recv_addr));	
@@ -102,7 +102,7 @@ main(int argc, char *argv[])
                 exit(EXIT_FAILURE);
         }
 
-        currentlen = inet6_opt_append(NULL,0,currentlen, IPV6_TLV_ROUTERALERT, 2, 2, NULL);
+        currentlen = inet6_opt_append(NULL, 0, currentlen, IPV6_TLV_DFF, 3, 2, NULL);
         if (currentlen == -1)
         {
                 perror("1st append");
