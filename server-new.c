@@ -141,6 +141,7 @@ main(int argc, char *argv[])
 	msg.msg_iovlen = 1;
 
 
+	printf("Ready to accept--\n");
 	while(1)
 	{
 		if((bytes_read = recvmsg(sfd, &msg, 0)) == -1) {
