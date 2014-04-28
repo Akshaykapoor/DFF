@@ -140,7 +140,7 @@ main(int argc, char *argv[])
 	msg.msg_iov = iov;
 	msg.msg_iovlen = 1;
 
-
+	printf("Accepting data--\n");
 	while(1)
 	{
 		if((bytes_read = recvmsg(sfd, &msg, 0)) == -1) {
