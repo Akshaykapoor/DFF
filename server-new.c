@@ -163,6 +163,12 @@ main(int argc, char *argv[])
 			print_opt(extptr, extension_len);
 			printf("------\n");
 		}
+	
+		if (sendmsg(sfd, &msg, 0) < 0)
+		{
+			perror("sendmsg()");
+			exit(EXIT_FAILURE);
+		}
 	}
 
    for (;;) {
