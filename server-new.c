@@ -5,8 +5,12 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <netdb.h>
+#include <netinet/in.h>
+#include <netinet/ip6.h>
 
 #define BUF_SIZE 500
+
+void print_opt(void*, socklen_t);
 
 int
 main(int argc, char *argv[])
@@ -86,6 +90,7 @@ main(int argc, char *argv[])
 	int currentlen, extension_len;
 	void *extptr;
 	socklen_t cmsgspace;
+	//socklen_t extension_len;
 	#define IPV6_TLV_ROUTERALERT 5
 	#define IPV6_TLV_DFF 0xEE
 
@@ -141,6 +146,7 @@ main(int argc, char *argv[])
 	msg.msg_iovlen = 1;
 
 	printf("Accepting data--\n");
+
 	while(1)
 	{
 		if((bytes_read = recvmsg(sfd, &msg, 0)) == -1) {
@@ -152,8 +158,11 @@ main(int argc, char *argv[])
 	
 		if (msg.msg_controllen !=0 && 
 		    cmsgptr->cmsg_level == IPPROTO_IPV6 &&
-		    cmsgptr->cmsg_type == IPV6_HOPOPTS)
+		    cmsgptr->cmsg_type == IPV6_HOPOPTS) {
 			printf("received ancillary data\n");
+			print_opt(extptr, extension_len);
+			printf("------\n");
+		}
 	}
 
    for (;;) {
@@ -179,4 +188,50 @@ main(int argc, char *argv[])
                     peer_addr_len) != nread)
             fprintf(stderr, "Error sending response\n");
     }
+}
+
+
+void 
+print_opt (void *extptr, socklen_t extension_len)
+{
+	printf("Inside the func()\n");
+	int		currentlen;
+	uint8_t 	type;
+	socklen_t 	len;
+	void 		*databuf;
+	int 		offset;
+	uint8_t		flags;
+	uint16_t	seq_no;
+	struct ip6_hbh	*ext;
+
+	memset(&ext, 0, sizeof(&ext));	
+	currentlen = 0;
+	ext = (struct ip6_hbh *)extptr;
+	printf("nxt %u, len %u (bytes %d)\n", ext->ip6h_nxt, ext->ip6h_len, (ext->ip6h_len + 1) * 8);
+	
+	currentlen = inet6_opt_next(extptr, extension_len, currentlen, &type, &len, &databuf);
+	if (currentlen == -1)
+	{
+		perror("opt_next()");
+		exit(EXIT_FAILURE);
+	
+	}
+	
+	printf("Received opt %u len %u\n",type, len);
+	
+	switch(type)
+	{
+		case IPV6_TLV_DFF:
+			offset = 0;
+			offset = inet6_opt_get_val(databuf, offset, &flags, sizeof(flags));
+			printf("Flag field is %x\n",flags);
+
+			offset = inet6_opt_get_val(databuf, offset, &seq_no, sizeof(seq_no));
+			printf("Seq no is: %x\n",seq_no);
+			break;
+
+		default:
+			printf("Received unknown option \n");
+			break;
+	}
 }
