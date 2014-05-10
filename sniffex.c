@@ -211,15 +211,20 @@
 #include <assert.h>
 #include <net/ethernet.h>
 #include <netinet/ip6.h>
-
+#include <netinet/ether.h>
+#include <sys/ioctl.h>
+#include <net/if.h>
+#include <netdb.h>
+#include <pthread.h>
+	
 /* default snap length (maximum bytes per packet to capture) */
 #define SNAP_LEN 1518
 #define ETH_P_802_EX1 0x88B5
 /* ethernet headers are always exactly 14 bytes [1] */
 #define SIZE_ETHERNET 14
 
-/* Ethernet addresses are 6 bytes */
-#define ETHER_ADDR_LEN	6
+#define SIZE 100
+#define ETH_P_802_EX1 0x88B5
 
 /* Ethernet header */
 struct sniff_ethernet {
@@ -228,55 +233,32 @@ struct sniff_ethernet {
         u_short ether_type;                     /* IP? ARP? RARP? etc */
 };
 
-/* IP header */
-struct sniff_ip {
-        u_char  ip_vhl;                 /* version << 4 | header length >> 2 */
-        u_char  ip_tos;                 /* type of service */
-        u_short ip_len;                 /* total length */
-        u_short ip_id;                  /* identification */
-        u_short ip_off;                 /* fragment offset field */
-        #define IP_RF 0x8000            /* reserved fragment flag */
-        #define IP_DF 0x4000            /* dont fragment flag */
-        #define IP_MF 0x2000            /* more fragments flag */
-        #define IP_OFFMASK 0x1fff       /* mask for fragmenting bits */
-        u_char  ip_ttl;                 /* time to live */
-        u_char  ip_p;                   /* protocol */
-        u_short ip_sum;                 /* checksum */
-        struct  in_addr ip_src,ip_dst;  /* source and dest address */
-};
-#define IP_HL(ip)               (((ip)->ip_vhl) & 0x0f)
-#define IP_V(ip)                (((ip)->ip_vhl) >> 4)
-
-/* IPv6 structure */
-
-/* TCP header */
-typedef u_int tcp_seq;
-
-struct sniff_tcp {
-        u_short th_sport;               /* source port */
-        u_short th_dport;               /* destination port */
-        tcp_seq th_seq;                 /* sequence number */
-        tcp_seq th_ack;                 /* acknowledgement number */
-        u_char  th_offx2;               /* data offset, rsvd */
-#define TH_OFF(th)      (((th)->th_offx2 & 0xf0) >> 4)
-        u_char  th_flags;
-        #define TH_FIN  0x01
-        #define TH_SYN  0x02
-        #define TH_RST  0x04
-        #define TH_PUSH 0x08
-        #define TH_ACK  0x10
-        #define TH_URG  0x20
-        #define TH_ECE  0x40
-        #define TH_CWR  0x80
-        #define TH_FLAGS        (TH_FIN|TH_SYN|TH_RST|TH_ACK|TH_URG|TH_ECE|TH_CWR)
-        u_short th_win;                 /* window */
-        u_short th_sum;                 /* checksum */
-        u_short th_urp;                 /* urgent pointer */
-};
 
 // Global definitions for src and dest MAC
+
 struct sniff_ethernet eth_header;
-//short *seq_no;
+pthread_mutex_t lock;
+
+/*typedef struct 
+{
+short sequence_number;
+unsigned char message[78];
+}Stored_packet;
+*/
+struct Stored_packet{ 
+	short sequence_number;
+	unsigned char message[78];
+};
+struct Stored_packet *stored_packet[SIZE];
+
+void initialize_Packet()
+{
+	int i;
+	for(i=0; i< SIZE; i++)
+		stored_packet[i]= NULL;
+	
+}
+
 void
 got_packet(u_char *args, const struct pcap_pkthdr *header, const u_char *packet);
 
@@ -423,8 +405,102 @@ return;
 }
 
 /*
- * dissect/print packet
+ * used for sending neighbor discovery message 
  */
+
+char* neigh_disc()
+{
+	FILE *fp;
+	int status;
+	char path[100];
+	char *mac = malloc(sizeof(path));
+	
+	fp = popen("ndisc6 -1 2001::1 eth0 | awk '/Target/{print $4}'","r");
+	if (fp == NULL) {
+		perror("error in popen()");
+		exit(EXIT_FAILURE);
+	}
+
+	while (fgets(path,100, fp) != NULL)
+		printf("%s", path);
+
+	strcpy(mac, path);
+	printf("Mac from pointer: %s\n", mac);
+	status = pclose(fp);
+	if (status == -1) {
+		perror("pclose error()");
+		exit(EXIT_FAILURE);
+	}
+	return mac;
+}
+
+/*
+ *disect/print packet
+ */
+
+int get_mac_address()
+{
+	struct ifreq  s;
+	int fd = socket(AF_INET6, SOCK_DGRAM, 0);
+	
+	strcpy(s.ifr_name, "eth0");
+	
+	if (0 == ioctl(fd, SIOCGIFHWADDR, &s)) 
+	{
+		int i;
+		for(i=0; i<6; ++i)
+		printf("%02x:",(unsigned char)s.ifr_addr.sa_data[i]);
+		printf("\n");
+		return 0;
+	}
+	close(fd);
+	return 1;
+}
+
+
+void fill_local_packet_pool(unsigned char* ip6_packet, short seq_no)
+{
+
+	int i;
+	while( stored_packet[i] != NULL)
+	{
+		i++;
+		i=i%SIZE;
+	}
+
+	struct Stored_packet * tempPacket;
+	tempPacket = (struct Stored_packet *) malloc(sizeof(struct Stored_packet));
+	if( tempPacket == NULL)
+	{
+		printf("Error in malloc\n");
+	}
+	stored_packet[i]= tempPacket;
+
+	memcpy( stored_packet[i]->message, ip6_packet, 78);
+	stored_packet[i]->sequence_number = seq_no;
+
+}
+
+void set_ack(short seq_no)
+{
+	int i = 0;
+	pthread_mutex_lock(&lock);
+	for(i=0;i<SIZE;i++)
+	{
+		if(stored_packet[i] != NULL && stored_packet[i]->sequence_number == seq_no) {
+			free(stored_packet[i]);
+			stored_packet[i] = NULL;
+			printf("Deleting the stored packet..\n");
+		}
+		else
+			continue;
+	}
+	printf("Deleting the stored packet\n");
+	pthread_mutex_unlock(&lock);
+	return;
+}
+
+
 void
 got_packet(u_char *args, const struct pcap_pkthdr *header, const u_char *packet)
 {
@@ -433,9 +509,6 @@ got_packet(u_char *args, const struct pcap_pkthdr *header, const u_char *packet)
 	
 	/* declare pointers to packet headers */
 	const struct sniff_ethernet *ethernet;  /* The ethernet header [1] */
-	const struct sniff_ip *ip;              /* The IP header */
-	const struct sniff_tcp *tcp;            /* The TCP header */
-	const char *payload;                    /* Packet payload */
 
 	short *seq_no;
 	struct ether_addr *host;	   /* For displaying ethernet packet */
@@ -452,19 +525,42 @@ got_packet(u_char *args, const struct pcap_pkthdr *header, const u_char *packet)
 	/* define ethernet header */
 	ethernet = (struct sniff_ethernet*)(packet);
 	
-	printf("------after ether struct------\n");
+	const u_int16_t type = ethernet->ether_type;
+	
+	switch(ntohs(type)) {
+	case ETH_P_802_EX1:
+		seq_no = (short *)(packet + SIZE_ETHERNET);
+		printf("Seq_no of L2 ACK is: %x\n", *seq_no);
+		printf("Received L2 ACK from \n");
+		set_ack(*seq_no);
+		break;
+	case ETHERTYPE_IPV6:
+		printf("Its an IPv6\n");
+		break;
+	default:
+		printf("Protocol unknown\n");
+		break;
+	}
 
-	/* display MAC addresses */
-	//memcpy(&host, &ethernet->ether_dhost, sizeof(host));
+	/* Form packet for L2 ACK */
 
 	memcpy(&eth_header.ether_dhost, &ethernet->ether_shost, sizeof(struct ether_addr));
-	//memset(eth_header.ether_dhost, 0xff, sizeof(eth_header.ether_dhost));
-	//memset(eth_header.ether_shost, 0xff, sizeof(eth_header.ether_shost));
-	memcpy(&eth_header.ether_shost, &ethernet->ether_dhost, sizeof(struct ether_addr));
+
+	/*
+	 *TODO Should be able to retrive one's MAC address, 
+          not to be hard-coded 
+	 */
+
+	char str[] = "08:00:27:e3:6f:5b";
+	struct ether_addr *ea = ether_aton(str);
+
+	memcpy(&eth_header.ether_shost,(void *)&ea->ether_addr_octet, sizeof(struct ether_addr));
+
 
 	eth_header.ether_type = htons(ETH_P_802_EX1);
 	//daddr = ether_ntoa(&host);
 
+	// Display MAC addresses of the received packet 
 	printf("\nDestination MacAddr: %02x:%02x:%02x:%02x:%02x:%02x\n", (unsigned)ethernet->ether_dhost[0],
 		(unsigned)ethernet->ether_dhost[1],
 		(unsigned)ethernet->ether_dhost[2],
@@ -479,26 +575,26 @@ got_packet(u_char *args, const struct pcap_pkthdr *header, const u_char *packet)
 		(unsigned)ethernet->ether_shost[4],
 		(unsigned)ethernet->ether_shost[5]);
 
-	//printf("\nSource MAC: %x\n", saddr);
-	//printf("\nDestiaiton Mac: %s\n", daddr);
-
 	assert(header->caplen <= header->len);
-	
 	assert(header->caplen >= sizeof(struct ether_header));
 
-	const u_int16_t type = ethernet->ether_type;
+	/* print source and destination IP addresses */
 
-	switch(ntohs(type)) {
-	case ETHERTYPE_IP:
-		printf("Its is an IPv4\n");
-		break;
-	case ETHERTYPE_IPV6:
-		printf("Its an IPv6\n");
-		break;
-	default:
-		printf("Protocol unknown\n");
-		break;
-	}
+	char src_buf[INET6_ADDRSTRLEN];
+	char dst_buf[INET6_ADDRSTRLEN];
+	char host_addr[] = "2001::3";
+
+	printf("From: %s\n", inet_ntop(AF_INET6, &ip6header->ip6_src, src_buf, sizeof(src_buf)));
+	
+	printf("To: %s\n", inet_ntop(AF_INET6, &ip6header->ip6_dst, dst_buf, sizeof(dst_buf)));
+
+	int i = memcmp(src_buf, host_addr,sizeof(host_addr));
+	if(i < 0 || i > 0)
+		printf("Address not equal\n");
+	else
+		printf("Addresses are equal\n");
+
+
 	//printf("\n\n display mac addr failed------\n");
 
 	/* define/compute ip header offset */
@@ -510,14 +606,7 @@ got_packet(u_char *args, const struct pcap_pkthdr *header, const u_char *packet)
 	       return;
 	}
 	
-	/* display MAC addresses */
-
-	char buf[INET6_ADDRSTRLEN];
-	
-	/* print source and destination IP addresses */
-	printf("From: %s\n", inet_ntop(AF_INET6, &ip6header->ip6_src, buf, sizeof(buf)));
-	printf("To: %s\n", inet_ntop(AF_INET6, &ip6header->ip6_dst, buf, sizeof(buf)));
-	
+	/* display Hop by Hop options header data*/
 
 	struct ip6_hbh *hopbyhop;
 	hopbyhop = (struct ip6_hbh *)(packet + SIZE_ETHERNET + 40);
@@ -526,7 +615,11 @@ got_packet(u_char *args, const struct pcap_pkthdr *header, const u_char *packet)
 	seq_no = (short *)(packet + SIZE_ETHERNET + 40 + 2 + 3 );
 	printf("seq_no: %x\n",*seq_no);
 	
+	
+	/* Making frame for L2 ACK */
+
 	unsigned char frame[sizeof(struct ether_header) + sizeof(short)];
+	
 	memcpy(frame, &eth_header, sizeof(struct ether_header));
 	memcpy(frame + sizeof(struct ether_header), seq_no, sizeof(short));
 
@@ -534,7 +627,7 @@ got_packet(u_char *args, const struct pcap_pkthdr *header, const u_char *packet)
 	pcap_t *send_handle;
 	char errbuf[PCAP_ERRBUF_SIZE];
  	char *dev;
-	
+
 	dev = pcap_lookupdev(errbuf);
 	if (dev == NULL) {
 		fprintf(stderr, "Couldn't find default device: %s\n",
@@ -548,14 +641,62 @@ got_packet(u_char *args, const struct pcap_pkthdr *header, const u_char *packet)
 		exit(EXIT_FAILURE);
 	}
 
-	printf("send handle created\n");
+
+	/*
+	 * Sending received packet again to next hop
+	 */
+
+	unsigned char ip6_packet[78] = {};
+	memcpy(ip6_packet, packet, 78);
+
+	fill_local_packet_pool( ip6_packet, *seq_no);
+
+	struct sniff_ethernet *send_ether;
+
+	int z = memcmp(ip6_packet, packet, 78);
+	if (z < 0 || i > 0)
+		printf("Not copied corredtly\n");
+	else
+		printf("Copied corredtly\n");
+
+	send_ether = (struct sniff_ethernet *)(ip6_packet);
+
+	char *mac_addr = neigh_disc();
+	printf("Mac addr is: %s\n", mac_addr);
+	struct ether_addr *address = ether_aton(mac_addr);
+	//printf("Address: %s\n", address->ether_addr_octet);	
+
+	//memcpy(&send_ether->ether_dhost, "0xff", sizeof(struct ether_addr));	
+
+	#if 1 
+	//int a = get_mac_address();
+	//char str[] = "08:00:27:e3:6f:5b";
+	//struct ether_addr *ea = ether_aton(str);
+
+	ea = ether_aton(str);
+
+	memcpy(&send_ether->ether_shost,(void *)&ea->ether_addr_octet, sizeof(struct ether_addr));
+	//memcpy(&send_ether->ether_dhost,(void *)&ea->ether_addr_octet, sizeof(struct ether_addr));
+	
+	/*Injecting IPv6 packet to next hop*/
+	if(pcap_inject(send_handle, ip6_packet, sizeof(ip6_packet)) == -1) {
+		pcap_perror(send_handle,0);
+		pcap_close(send_handle);
+		exit(1);
+	}
+
+	printf("sent ip6 packet to next hop......\n");
+	#endif
+	
+	/* Injecting L2 ACK fame*/
 	if(pcap_inject(send_handle, frame, sizeof(frame))==-1) {
    	       pcap_perror(send_handle,0);
                pcap_close(send_handle);
 	       exit(1);
     	}
+
 	pcap_close(send_handle);
-	printf("packet sent\n");
+	printf("L2 ACK sent\n");
 	/* determine protocol */	
 	#if 0
 	switch(ip->ip_p) {
@@ -575,36 +716,6 @@ got_packet(u_char *args, const struct pcap_pkthdr *header, const u_char *packet)
 			printf("   Protocol: unknown\n");
 			return;
 	}
-	
-	/*
-	 *  OK, this packet is TCP.
-	 */
-	
-	/* define/compute tcp header offset */
-	tcp = (struct sniff_tcp*)(packet + SIZE_ETHERNET + size_ip);
-	size_tcp = TH_OFF(tcp)*4;
-	if (size_tcp < 20) {
-		printf("   * Invalid TCP header length: %u bytes\n", size_tcp);
-		return;
-	}
-	
-	//printf("   Src port: %d\n", ntohs(tcp->th_sport));
-	//printf("   Dst port: %d\n", ntohs(tcp->th_dport));
-	
-	/* define/compute tcp payload (segment) offset */
-	payload = (u_char *)(packet + SIZE_ETHERNET + size_ip + size_tcp);
-	
-	/* compute tcp payload (segment) size */
-	size_payload = ntohs(ip->ip_len) - (size_ip + size_tcp);
-	
-	/*
-	 * Print payload data; it might be binary, so don't just
-	 * treat it as a string.
-	 */
-	if (size_payload > 0) {
-		printf("   Payload (%d bytes):\n", size_payload);
-		print_payload(payload, size_payload);
-	}
 	#endif
 return;
 }
@@ -617,12 +728,13 @@ int main(int argc, char **argv)
 	pcap_t *handle;				/* packet capture handle */
 	pcap_t *send_handle;
 
-	char filter_exp[] = "src host 2001::3";		/* filter expression [3] */
+	char filter_exp[] = "src host 2001::3 and dst host 2001::1";		/* filter expression [3] */
 	struct bpf_program fp;			/* compiled filter program (expression) */
 	bpf_u_int32 mask;			/* subnet mask */
 	bpf_u_int32 net;			/* ip */
-	int num_packets = 10;			/* number of packets to capture */
+	int num_packets = 20;			/* number of packets to capture */
 	print_app_banner();
+	initialize_Packet();
 
 	/* check for capture device name on command-line */
 	if (argc == 2) {
@@ -685,7 +797,6 @@ int main(int argc, char **argv)
 
 	pcap_setdirection(handle, PCAP_D_IN);
 
-	unsigned char frame[sizeof(struct ether_header) + sizeof(short)];
 	//memset(frame, 0xff, sizeof(struct ether_header));
 	/*
 	send_handle = pcap_open_live(dev, 96, 0, 0, errbuf);
@@ -696,7 +807,7 @@ int main(int argc, char **argv)
 	printf("send handle created\n");
 	*/
 	/* now we can set our callback function */
-	pcap_loop(handle, num_packets, got_packet, NULL);
+	pcap_loop(handle, -1, got_packet, NULL);
 	pcap_freecode(&fp);
 	pcap_close(handle);
 	//memcpy(frame, &eth_header, sizeof(struct ether_header));
