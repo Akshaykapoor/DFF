@@ -197,6 +197,7 @@
 #define APP_DISCLAIMER	"THERE IS ABSOLUTELY NO WARRANTY FOR THIS PROGRAM."
 
 #include <pcap.h>
+#include <time.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -251,6 +252,11 @@ struct Stored_packet{
 };
 struct Stored_packet *stored_packet[SIZE];
 
+struct parameters{
+	u_char *param1;
+	const struct pcap_pkthdr *param2;
+	const u_char *param3;
+};
 
 
 struct Processed_set {
@@ -271,7 +277,7 @@ void initialize_Packet()
 }
 
 void
-got_packet(u_char *args, const struct pcap_pkthdr *header, const u_char *packet);
+create_thread(u_char *args, const struct pcap_pkthdr *header, const u_char *packet);
 
 void
 print_payload(const u_char *payload, int len);
@@ -433,10 +439,10 @@ char* neigh_disc()
 	}
 
 	while (fgets(path,100, fp) != NULL)
-		printf("%s", path);
+		//printf("%s", path);
 
 	strcpy(mac, path);
-	printf("Mac from pointer: %s\n", mac);
+	//printf("Mac from pointer: %s\n", mac);
 	status = pclose(fp);
 	if (status == -1) {
 		perror("pclose error()");
@@ -627,7 +633,7 @@ void send_to_next_hop(unsigned char *ip6_packet)
 	send_ether = (struct sniff_ethernet *)(ip6_packet);
 
 	char *mac_addr = neigh_disc();
-	printf("Mac addr is: %s\n", mac_addr);
+	//printf("Mac addr is: %s\n", mac_addr);
 	struct ether_addr *address = ether_aton(mac_addr);
 	//printf("Address: %s\n", address->ether_addr_octet);	
 
@@ -750,10 +756,71 @@ void send_dropped_packet(short seq_no)
 	pcap_close(send_handle);
 	printf("Sending...DUP packet \n");
 }
-	
-void got_packet(u_char *args, const struct pcap_pkthdr *header, const u_char *packet)
+#if 0	
+void create_thread(u_char *args, const struct pcap_pkthdr *header, const u_char *packet)
 {
 
+	struct parameters thrd_args;
+	thrd_args.param1 = args;
+	thrd_args.param2 = header;
+	thrd_args.param3 = packet;
+
+	pthread_t packet_handler;
+	int pkt_err;
+
+	pkt_err = pthread_create(&packet_handler, NULL, &got_packet, (void *)&thrd_args);
+
+	if (pkt_err != 0)
+		fprintf(stderr, "can't create thread: %s\n",strerror(pkt_err));
+	else
+		fprintf(stderr, "New thread for packet....\n");
+
+	pthread_exit(NULL);
+}
+#endif
+
+//void got_packet(u_char *args, const struct pcap_pkthdr *header, const u_char *packet)
+
+void check_for_l2_ack(short seq_no)
+{
+	int i;
+	int ack_not_received;
+	time_t startTime = time(NULL);
+	while(time(NULL) - startTime < 1)
+	{
+		pthread_mutex_lock(&lock);
+		for(i = 0; i < SIZE; i++)
+		{
+			if(stored_packet[i]->sequence_number == seq_no)
+			{
+				//printf("ACK not received\n");
+				ack_not_received = 1;
+			}
+			else
+				ack_not_received = 0;
+		}
+	}
+	pthread_mutex_unlock(&lock);
+
+	if(ack_not_received)
+		printf("ACK not received\n");
+	else
+		printf("ACK received\n");
+	return;
+}
+
+void *got_packet(void *thrd_args)
+{
+	struct parameters *thread_args;
+	thread_args = thrd_args;
+	
+	u_char *args = thread_args->param1;
+	const struct pcap_pkthdr *header = thread_args->param2;
+	u_char *packet = thread_args->param3;
+
+	// defining the pcap_argumets again to be used in thread
+
+	
 	static int count = 1;                   /* packet counter */
 	unsigned char *ip_dff;
 	struct ether_header *prev_ether_addr = (struct ether_header *)malloc(sizeof(struct ether_header));
@@ -780,7 +847,7 @@ void got_packet(u_char *args, const struct pcap_pkthdr *header, const u_char *pa
 		printf("Seq_no of L2 ACK is: %x\n", *seq_no);
 		printf("Received L2 ACK from \n");
 		
-		send_dropped_packet(*seq_no);	
+		//send_dropped_packet(*seq_no);	
 		set_ack(*seq_no);
 		
 		send_l2_ack(ethernet, *seq_no, prev_ether_addr);
@@ -813,24 +880,22 @@ void got_packet(u_char *args, const struct pcap_pkthdr *header, const u_char *pa
 		struct in6_addr *orig_addr = &ip6header->ip6_src;
 		if (!(check_for_processed_tuple(*seq_no, orig_addr)))
 			add_in_processed_set(orig_addr, *seq_no, (struct ether_addr *)&ethernet->ether_shost);
+
 		// used to keep track of prev ack
 		//prev_seq_no = *seq_no;
 		//send_l2_ack(ethernet, *seq_no);
 		fill_local_packet_pool(ip6_packet, *seq_no);
 		prev_ether_addr = (struct ether_header *)(ip6_packet);
 		send_to_next_hop(ip6_packet);
+
 		/* Check if ACK for prvious packet recived or not.
 		 * If not recevied then return and wait for ACK.
 		 */
-		#if 0
-		if(first_packet)
-			if(check_for_prev_ack(prev_seq_no))
-				return;
-
-		send_to_next_hop(ip6_packet);
-		first_packet = 1;
+		#if 1
+		check_for_l2_ack(*seq_no);
+		//send_to_next_hop(ip6_packet);
 		#endif
-		break;
+		return;
 	default:
 		printf("Protocol unknown\n");
 		return;
@@ -926,7 +991,29 @@ void got_packet(u_char *args, const struct pcap_pkthdr *header, const u_char *pa
 	pcap_close(send_handle);
 	printf("L2 ACK sent\n");
 	#endif
+
+	pthread_exit(NULL);
 return;
+}
+
+void create_thread(u_char *args, const struct pcap_pkthdr *header, const u_char *packet)
+{
+
+	struct parameters thrd_args;
+	thrd_args.param1 = args;
+	thrd_args.param2 = header;
+	thrd_args.param3 = packet;
+
+	pthread_t packet_handler;
+	int pkt_err;
+
+	pkt_err = pthread_create(&packet_handler, NULL, &got_packet, (void *)&thrd_args);
+
+	if (pkt_err != 0)
+		fprintf(stderr, "can't create thread: %s\n",strerror(pkt_err));
+	else
+		fprintf(stderr, "New thread for packet....\n");
+
 }
 
 int main(int argc, char **argv)
@@ -946,6 +1033,10 @@ int main(int argc, char **argv)
 	int num_packets = 20;			/* number of packets to capture */
 	print_app_banner();
 	initialize_Packet();
+	
+	pthread_t packet_handler;
+	int pkt_err;
+	int *ptr[2];
 
 	/* check for capture device name on command-line */
 	if (argc == 2) {
@@ -1018,7 +1109,7 @@ int main(int argc, char **argv)
 	printf("send handle created\n");
 	*/
 	/* now we can set our callback function */
-	pcap_loop(handle, -1, got_packet, NULL);
+	pcap_loop(handle, -1, create_thread, NULL);
 	pcap_freecode(&fp);
 	pcap_close(handle);
 	//memcpy(frame, &eth_header, sizeof(struct ether_header));
